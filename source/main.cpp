@@ -48,8 +48,6 @@ int main(int argc, const char *argv[])
 
     drive.set_parent(jksvId);
 
-    drive.upload_file("Rayman Forever.exe", "./setup_rayman_forever_1.21_(28045).exe");
-
     curl::exit();
     return 0;
 }
