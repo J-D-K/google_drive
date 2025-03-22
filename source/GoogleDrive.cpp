@@ -135,7 +135,7 @@ GoogleDrive::GoogleDrive(std::string_view configFile) : m_curl(curl::new_handle(
     }
 
     // The root ID is needed to make sure this all operates as it should.
-    if (!GoogleDrive::get_root_id())
+    if (!GoogleDrive::get_set_root_id() || !GoogleDrive::request_listing())
     {
         return;
     }
@@ -143,9 +143,243 @@ GoogleDrive::GoogleDrive(std::string_view configFile) : m_curl(curl::new_handle(
     m_isInitialized = true;
 }
 
-bool GoogleDrive::is_initialized(void) const
+void GoogleDrive::change_directory(std::string_view name)
 {
-    return m_isInitialized;
+    m_parent = name;
+}
+
+bool GoogleDrive::create_directory(std::string_view name)
+{
+    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
+    {
+        return false;
+    }
+
+    // Headers.
+    curl::HeaderList headers = curl::new_header_list();
+    curl::append_header(headers, m_authHeader.c_str());
+    curl::append_header(headers, HEADER_CONTENT_TYPE_JSON.data());
+
+    // Json
+    json::Object postJson = json::new_object(json_object_new_object);
+    json_object *dirName = json_object_new_string(name.data());
+    json_object *mimeType = json_object_new_string(MIME_TYPE_DIRECTORY.data());
+    json::add_object(postJson, JSON_KEY_NAME.data(), dirName);
+    json::add_object(postJson, JSON_KEY_MIME_TYPE.data(), mimeType);
+    // Add the parent array if the parent string isn't empty.
+    if (!m_parent.empty())
+    {
+        json_object *parentArray = json_object_new_array();
+        json_object *parentString = json_object_new_string(m_parent.c_str());
+        json_object_array_add(parentArray, parentString);
+        json::add_object(postJson, JSON_KEY_PARENTS.data(), parentArray);
+    }
+
+    // Response string.
+    std::string response;
+    // Curl post.
+    curl::prepare_post(m_curl);
+    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
+    curl::set_option(m_curl, CURLOPT_URL, URL_DRIVE_FILE_API.data());
+    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
+    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+    curl::set_option(m_curl, CURLOPT_POSTFIELDS, json_object_get_string(postJson.get()));
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
+    if (!responseParser || GoogleDrive::error_occurred(responseParser))
+    {
+        return false;
+    }
+
+    // This is all I really care about.
+    json_object *id = json::get_object(responseParser, JSON_KEY_ID.data());
+    if (!id)
+    {
+        return false;
+    }
+
+    // Emplace the new directory. Requesting a listing is a waste of time.
+    m_list.emplace_back(name, json_object_get_string(id), m_parent, true);
+
+    return true;
+}
+
+bool GoogleDrive::delete_directory(std::string_view name)
+{
+    // For now, this will just call delete_file. To do: Make recursive deleting if needed?
+    return GoogleDrive::delete_file(name);
+}
+
+bool GoogleDrive::delete_file(std::string_view name)
+{
+    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
+    {
+        return false;
+    }
+
+    // Header
+    curl::HeaderList headers = curl::new_header_list();
+    curl::append_header(headers, m_authHeader);
+
+    // URL.
+    char urlBuffer[SIZE_URL_BUFFER] = {0};
+    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s/%s", URL_DRIVE_FILE_API.data(), name.data());
+
+    // Response string. For this request, it's only to check for errors.
+    std::string response;
+    // Curl. This one is different.
+    curl_easy_reset(m_curl.get());
+    curl::set_option(m_curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
+    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
+    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
+    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    // This request is weird. There is no response from the server if everything worked. This is only checked to see
+    // if we got an error response.
+    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
+    if (GoogleDrive::error_occurred(responseParser))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool GoogleDrive::upload_file(const std::filesystem::path &path)
+{
+    // Make sure the file can even be read before trying to continue.
+    std::ifstream target(path, target.binary);
+    if (!target.is_open())
+    {
+        return false;
+    }
+
+    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
+    {
+        return false;
+    }
+
+    // Headers.
+    curl::HeaderList headers = curl::new_header_list();
+    curl::append_header(headers, m_authHeader);
+    curl::append_header(headers, HEADER_CONTENT_TYPE_JSON.data());
+
+    // URL.
+    char urlBuffer[SIZE_URL_BUFFER] = {0};
+    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?uploadType=resumable", URL_DRIVE_UPLOAD_API.data());
+
+    // Post JSON.
+    json::Object postJson = json::new_object(json_object_new_object);
+    json_object *driveName = json_object_new_string(path.filename().c_str());
+    json::add_object(postJson, JSON_KEY_NAME.data(), driveName);
+    if (!m_parent.empty())
+    {
+        json_object *parents = json_object_new_array();
+        json_object *parent = json_object_new_string(m_parent.c_str());
+        json_object_array_add(parents, parent);
+        json::add_object(postJson, JSON_KEY_PARENTS.data(), parents);
+    }
+
+    // Header array.
+    curl::HeaderArray headerArray;
+    // Curl
+    curl::prepare_post(m_curl);
+    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
+    curl::set_option(m_curl, CURLOPT_HEADERFUNCTION, curl::write_headers_array);
+    curl::set_option(m_curl, CURLOPT_HEADERDATA, &headerArray);
+    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
+    curl::set_option(m_curl, CURLOPT_POSTFIELDS, json_object_get_string(postJson.get()));
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    // Extract upload location from headers.
+    std::string location;
+    if (!curl::get_header_value(headerArray, "location", location))
+    {
+        logger::log("Error extracting location from upload request headers.");
+        return false;
+    }
+
+    // Response string.
+    std::string response;
+    // This is the actual upload. IIRC, this doesn't need the token to work.
+    curl::prepare_upload(m_curl);
+    curl::set_option(m_curl, CURLOPT_URL, location.c_str());
+    curl::set_option(m_curl, CURLOPT_READFUNCTION, curl::read_data_file);
+    curl::set_option(m_curl, CURLOPT_READDATA, &target);
+    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
+    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
+    if (!responseParser || GoogleDrive::error_occurred(responseParser))
+    {
+        return false;
+    }
+
+    // Try to grab these.
+    json_object *id = json::get_object(responseParser, JSON_KEY_ID.data());
+    json_object *filename = json::get_object(responseParser, JSON_KEY_NAME.data());
+    json_object *mimeType = json::get_object(responseParser, JSON_KEY_MIME_TYPE.data());
+    // All of them are needed to continue.
+    if (!id || !filename || !mimeType)
+    {
+        return false;
+    }
+
+    // Emplace it.
+    m_list.emplace_back(json_object_get_string(filename),
+                        json_object_get_string(id),
+                        m_parent,
+                        std::strcmp(MIME_TYPE_DIRECTORY.data(), json_object_get_string(mimeType)) == 0);
+
+    // Assume it worked and everything is fine!
+    return true;
+}
+
+bool GoogleDrive::download_file(std::string_view name, const std::filesystem::path &path)
+{
+    // Header
+    curl::HeaderList headers = curl::new_header_list();
+    curl::append_header(headers, m_authHeader);
+
+    // URL
+    char urlBuffer[SIZE_URL_BUFFER] = {0};
+    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s/%s/download", URL_DRIVE_FILE_API.data(), name.data());
+
+    // Response string.
+    std::string response;
+    // Curl
+    curl::prepare_post(m_curl);
+    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
+    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
+    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
+    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    return true;
 }
 
 bool GoogleDrive::sign_in(void)
@@ -274,7 +508,7 @@ bool GoogleDrive::sign_in(void)
     m_token = json_object_get_string(accessToken);
     m_refreshToken = json_object_get_string(refreshToken);
     // Calc this
-    m_expirationTime = std::time(NULL) + json_object_get_int64(expiresIn);
+    m_tokenExpiration = std::time(NULL) + json_object_get_int64(expiresIn);
 
     // Make header string
     m_authHeader = std::string(HEADER_AUTHORIZATION_BEARER) + m_token;
@@ -283,10 +517,62 @@ bool GoogleDrive::sign_in(void)
     return true;
 }
 
+bool GoogleDrive::get_set_root_id(void)
+{
+    // This should take place so early that this shouldn't be an issue, but you never know.
+    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
+    {
+        return false;
+    }
+
+    // Headers
+    curl::HeaderList headers = curl::new_header_list();
+    curl::append_header(headers, m_authHeader);
+
+    // URL
+    char urlBuffer[SIZE_URL_BUFFER] = {0};
+    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?fields=rootFolderId", URL_DRIVE_ABOUT_API.data());
+
+    // Response string.
+    std::string response;
+    // Curl
+    curl::prepare_get(m_curl);
+    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
+    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
+    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
+    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+
+    if (!curl::perform(m_curl))
+    {
+        return false;
+    }
+
+    // Response parsing.
+    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
+    if (!responseParser || GoogleDrive::error_occurred(responseParser))
+    {
+        return false;
+    }
+
+    // Get the root ID.
+    json_object *rootId = json::get_object(responseParser, "rootFolderId");
+    if (!rootId)
+    {
+        logger::log("Error getting root directory ID from Google Drive!");
+        return false;
+    }
+
+    // Save it and also set the current parent to it.
+    m_root = json_object_get_string(rootId);
+    m_parent = m_root;
+
+    return true;
+}
+
 bool GoogleDrive::token_is_valid(void) const
 {
     // Gonna give this a 10 second grace window.
-    return std::time(NULL) < (m_expirationTime - 10);
+    return std::time(NULL) < (m_tokenExpiration - 10);
 }
 
 bool GoogleDrive::refresh_token(void)
@@ -333,7 +619,7 @@ bool GoogleDrive::refresh_token(void)
 
     // Save them
     m_token = json_object_get_string(accessToken);
-    m_expirationTime = std::time(NULL) + json_object_get_int64(expiresIn);
+    m_tokenExpiration = std::time(NULL) + json_object_get_int64(expiresIn);
 
     // Re-do header string
     m_authHeader = std::string(HEADER_AUTHORIZATION_BEARER) + m_token;
@@ -341,7 +627,7 @@ bool GoogleDrive::refresh_token(void)
     return true;
 }
 
-bool GoogleDrive::request_listing(std::string_view parameters, bool clear)
+bool GoogleDrive::request_listing(void)
 {
     // Block against even trying if either of these fail.
     if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
@@ -349,19 +635,9 @@ bool GoogleDrive::request_listing(std::string_view parameters, bool clear)
         return false;
     }
 
-    if (clear)
-    {
-        m_remoteList.clear();
-    }
-
     // Initial URL.
     char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer,
-                  SIZE_URL_BUFFER,
-                  "%s?%s%s",
-                  URL_DRIVE_FILE_API.data(),
-                  PARAM_DEFAULT_LIST_QUERY.data(),
-                  parameters.empty() ? "" : parameters.data());
+    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?%s", URL_DRIVE_FILE_API.data(), PARAM_DEFAULT_LIST_QUERY.data());
 
     // Header
     curl::HeaderList headers = curl::new_header_list();
@@ -458,342 +734,13 @@ bool GoogleDrive::process_listing(json::Object &json)
         }
 
         // Emplace
-        m_remoteList.emplace_back(json_object_get_string(name),
-                                  json_object_get_string(id),
-                                  json_object_get_string(parent),
-                                  std::strcmp(MIME_TYPE_DIRECTORY.data(), json_object_get_string(mimeType)) == 0);
+        m_list.emplace_back(json_object_get_string(name),
+                            json_object_get_string(id),
+                            json_object_get_string(parent),
+                            std::strcmp(MIME_TYPE_DIRECTORY.data(), json_object_get_string(mimeType)) == 0);
     }
 
     return true;
-}
-
-bool GoogleDrive::get_directory_id(std::string_view name, std::string &idOut)
-{
-    GoogleDrive::ListIterator findDir = GoogleDrive::find_directory(name);
-    if (findDir == m_remoteList.end())
-    {
-        return false;
-    }
-
-    idOut = findDir->get_id();
-
-    return true;
-}
-
-bool GoogleDrive::get_file_id(std::string_view name, std::string &idOut)
-{
-    GoogleDrive::ListIterator findFile = GoogleDrive::find_file(name);
-    if (findFile == m_remoteList.end())
-    {
-        return false;
-    }
-
-    idOut = findFile->get_id();
-
-    return true;
-}
-
-void GoogleDrive::get_parent(std::string &idOut)
-{
-    idOut = m_parent;
-}
-
-void GoogleDrive::set_parent(std::string_view parent)
-{
-    m_parent = parent;
-}
-
-void GoogleDrive::return_to_root(void)
-{
-    m_parent.clear();
-}
-
-bool GoogleDrive::directory_exists(std::string_view name)
-{
-    return GoogleDrive::find_directory(name) != m_remoteList.end();
-}
-
-bool GoogleDrive::create_directory(std::string_view name)
-{
-    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
-    {
-        return false;
-    }
-
-    // Headers.
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader.c_str());
-    curl::append_header(headers, HEADER_CONTENT_TYPE_JSON.data());
-
-    // Json
-    json::Object postJson = json::new_object(json_object_new_object);
-    json_object *dirName = json_object_new_string(name.data());
-    json_object *mimeType = json_object_new_string(MIME_TYPE_DIRECTORY.data());
-    json::add_object(postJson, JSON_KEY_NAME.data(), dirName);
-    json::add_object(postJson, JSON_KEY_MIME_TYPE.data(), mimeType);
-    // Add the parent array if the parent string isn't empty.
-    if (!m_parent.empty())
-    {
-        json_object *parentArray = json_object_new_array();
-        json_object *parentString = json_object_new_string(m_parent.c_str());
-        json_object_array_add(parentArray, parentString);
-        json::add_object(postJson, JSON_KEY_PARENTS.data(), parentArray);
-    }
-
-    // Response string.
-    std::string response;
-    // Curl post.
-    curl::prepare_post(m_curl);
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_URL, URL_DRIVE_FILE_API.data());
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-    curl::set_option(m_curl, CURLOPT_POSTFIELDS, json_object_get_string(postJson.get()));
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
-    if (!responseParser || GoogleDrive::error_occurred(responseParser))
-    {
-        return false;
-    }
-
-    // This is all I really care about.
-    json_object *id = json::get_object(responseParser, JSON_KEY_ID.data());
-    if (!id)
-    {
-        return false;
-    }
-
-    // Emplace the new directory. Requesting a listing is a waste of time.
-    m_remoteList.emplace_back(name, json_object_get_string(id), m_parent, true);
-
-    return true;
-}
-
-bool GoogleDrive::upload_file(std::string_view name, std::string_view filePath)
-{
-    // Make sure the file can even be read before trying to continue.
-    std::ifstream target(filePath.data(), target.binary);
-    if (!target.is_open())
-    {
-        return false;
-    }
-
-    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
-    {
-        return false;
-    }
-
-    // Headers.
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader);
-    curl::append_header(headers, HEADER_CONTENT_TYPE_JSON.data());
-
-    // URL.
-    char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?uploadType=resumable", URL_DRIVE_UPLOAD_API.data());
-
-    // Post JSON.
-    json::Object postJson = json::new_object(json_object_new_object);
-    json_object *driveName = json_object_new_string(name.data());
-    json::add_object(postJson, JSON_KEY_NAME.data(), driveName);
-    if (!m_parent.empty())
-    {
-        json_object *parents = json_object_new_array();
-        json_object *parent = json_object_new_string(m_parent.c_str());
-        json_object_array_add(parents, parent);
-        json::add_object(postJson, JSON_KEY_PARENTS.data(), parents);
-    }
-
-    // Header array.
-    curl::HeaderArray headerArray;
-    // Curl
-    curl::prepare_post(m_curl);
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_HEADERFUNCTION, curl::write_headers_array);
-    curl::set_option(m_curl, CURLOPT_HEADERDATA, &headerArray);
-    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
-    curl::set_option(m_curl, CURLOPT_POSTFIELDS, json_object_get_string(postJson.get()));
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    // Extract upload location from headers.
-    std::string location;
-    if (!curl::get_header_value(headerArray, "location", location))
-    {
-        logger::log("Error extracting location from upload request headers.");
-        return false;
-    }
-
-    // Response string.
-    std::string response;
-    // This is the actual upload. IIRC, this doesn't need the token to work.
-    curl::prepare_upload(m_curl);
-    curl::set_option(m_curl, CURLOPT_URL, location.c_str());
-    curl::set_option(m_curl, CURLOPT_READFUNCTION, curl::read_data_file);
-    curl::set_option(m_curl, CURLOPT_READDATA, &target);
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
-    if (!responseParser || GoogleDrive::error_occurred(responseParser))
-    {
-        return false;
-    }
-
-    // Try to grab these.
-    json_object *id = json::get_object(responseParser, JSON_KEY_ID.data());
-    json_object *filename = json::get_object(responseParser, JSON_KEY_NAME.data());
-    json_object *mimeType = json::get_object(responseParser, JSON_KEY_MIME_TYPE.data());
-    // All of them are needed to continue.
-    if (!id || !filename || !mimeType)
-    {
-        return false;
-    }
-
-    // Emplace it.
-    m_remoteList.emplace_back(json_object_get_string(filename),
-                              json_object_get_string(id),
-                              m_parent,
-                              std::strcmp(MIME_TYPE_DIRECTORY.data(), json_object_get_string(mimeType)) == 0);
-
-    // Assume it worked and everything is fine!
-    return true;
-}
-
-bool GoogleDrive::download_file(std::string_view id, std::string_view filePath)
-{
-    // Header
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader);
-
-    // URL
-    char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s/%s/download", URL_DRIVE_FILE_API.data(), id.data());
-
-    // Response string.
-    std::string response;
-    // Curl
-    curl::prepare_post(m_curl);
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    return true;
-}
-
-bool GoogleDrive::delete_item(std::string_view id)
-{
-    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
-    {
-        return false;
-    }
-
-    // Header
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader);
-
-    // URL.
-    char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s/%s", URL_DRIVE_FILE_API.data(), id.data());
-
-    // Response string. For this request, it's only to check for errors.
-    std::string response;
-    // Curl. This one is different.
-    curl_easy_reset(m_curl.get());
-    curl::set_option(m_curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    // This request is weird. There is no response from the server if everything worked. This is only checked to see
-    // if we got an error response.
-    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
-    if (GoogleDrive::error_occurred(responseParser))
-    {
-        return false;
-    }
-
-    return true;
-}
-
-void GoogleDrive::debug_log_list(void)
-{
-    for (const Item &item : m_remoteList)
-    {
-        logger::log("%s:\n\t%s\n\t%s\n\t%s\n",
-                    item.get_name().data(),
-                    item.get_id().data(),
-                    item.get_parent_id().data(),
-                    item.is_directory() ? "Directory" : "File");
-    }
-}
-
-void GoogleDrive::debug_print_list(void)
-{
-    for (const Item &item : m_remoteList)
-    {
-        std::cout << item.get_name() << ": " << std::endl;
-        std::cout << "\t" << item.get_id() << std::endl;
-        std::cout << "\t" << item.get_parent_id() << std::endl;
-        std::cout << "\t" << (item.is_directory() ? "Directory" : "File") << std::endl;
-    }
-}
-
-bool GoogleDrive::debug_get_attributes(std::string_view id)
-{
-    // Headers
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader);
-
-    // Url
-    char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s/%s", URL_DRIVE_FILE_API.data(), id.data());
-
-    std::string response;
-    curl::prepare_get(m_curl);
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    std::cout << "Attributes: " << response << std::endl;
-
-    return true;
-}
-
-GoogleDrive::RemoteList &GoogleDrive::debug_get_remote_list(void)
-{
-    return m_remoteList;
 }
 
 bool GoogleDrive::error_occurred(json::Object &json)
@@ -813,70 +760,4 @@ bool GoogleDrive::error_occurred(json::Object &json)
         return true;
     }
     return false;
-}
-
-bool GoogleDrive::get_root_id(void)
-{
-    // This should take place so early that this shouldn't be an issue, but you never know.
-    if (!GoogleDrive::token_is_valid() && !GoogleDrive::refresh_token())
-    {
-        return false;
-    }
-
-    // Headers
-    curl::HeaderList headers = curl::new_header_list();
-    curl::append_header(headers, m_authHeader);
-
-    // URL
-    char urlBuffer[SIZE_URL_BUFFER] = {0};
-    std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?fields=rootFolderId", URL_DRIVE_ABOUT_API.data());
-
-    // Response string.
-    std::string response;
-    // Curl
-    curl::prepare_get(m_curl);
-    curl::set_option(m_curl, CURLOPT_HTTPHEADER, headers.get());
-    curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
-    curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
-    curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
-
-    if (!curl::perform(m_curl))
-    {
-        return false;
-    }
-
-    // Response parsing.
-    json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
-    if (!responseParser || GoogleDrive::error_occurred(responseParser))
-    {
-        return false;
-    }
-
-    // Get the root ID.
-    json_object *rootId = json::get_object(responseParser, "rootFolderId");
-    if (!rootId)
-    {
-        logger::log("Error getting root directory ID from Google Drive!");
-        return false;
-    }
-
-    // Save it and also set the current parent to it.
-    m_root = json_object_get_string(rootId);
-    m_parent = m_root;
-
-    return true;
-}
-
-GoogleDrive::ListIterator GoogleDrive::find_directory(std::string_view name)
-{
-    return std::find_if(m_remoteList.begin(), m_remoteList.end(), [name, this](const Item &item) {
-        return item.is_directory() && item.get_name() == name && item.get_parent_id() == this->m_parent;
-    });
-}
-
-GoogleDrive::ListIterator GoogleDrive::find_file(std::string_view name)
-{
-    return std::find_if(m_remoteList.begin(), m_remoteList.end(), [name, this](const Item &item) {
-        return !item.is_directory() && item.get_name() == name && item.get_parent_id() == this->m_parent;
-    });
 }

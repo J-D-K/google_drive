@@ -1,4 +1,5 @@
 #include "GoogleDrive.hpp"
+#include "Local.hpp"
 #include "curl.hpp"
 #include "logger.hpp"
 #include <iostream>
@@ -21,6 +22,12 @@ int main(int argc, const char *argv[])
     // Init logger.
     logger::initialize();
 
+    // Init local.
+    std::string localRoot;
+    std::cout << "Local root: ";
+    std::cin >> localRoot;
+    Local local(localRoot);
+
     // Test drive instance.
     GoogleDrive drive{"./client_secret.json"};
     if (!drive.is_initialized())
@@ -28,9 +35,6 @@ int main(int argc, const char *argv[])
         std::cout << "Error initializing drive!" << std::endl;
         return -2;
     }
-
-    // Get the drive listing. The parent is set to the root directory by default upon construction.
-    drive.request_listing({}, true);
 
     if (!drive.directory_exists(DIR_JKSV_FOLDER.data()) && !drive.create_directory(DIR_JKSV_FOLDER.data()))
     {
@@ -45,8 +49,6 @@ int main(int argc, const char *argv[])
         std::cout << "Error getting ID of JKSV folder!" << std::endl;
         return -4;
     }
-
-    drive.set_parent(jksvId);
 
     curl::exit();
     return 0;

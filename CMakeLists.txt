@@ -11,8 +11,10 @@ target_sources(${PROJECT_NAME} PRIVATE
                source/curl.cpp
                source/GoogleDrive.cpp
                source/Item.cpp
+               source/Local.cpp
                source/logger.cpp
                source/main.cpp
+               source/Storage.cpp
                source/stringutil.cpp)
 
 target_include_directories(${PROJECT_NAME} PRIVATE include)
