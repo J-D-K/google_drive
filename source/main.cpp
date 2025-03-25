@@ -1,3 +1,4 @@
+#include "CommandReader.hpp"
 #include "GoogleDrive.hpp"
 #include "Local.hpp"
 #include "curl.hpp"
@@ -25,8 +26,8 @@ int main(int argc, const char *argv[])
     // Init local.
     std::string localRoot;
     std::cout << "Local root: ";
-    std::cin >> localRoot;
-    Local local(localRoot);
+    std::getline(std::cin, localRoot);
+    Local local{localRoot};
 
     // Test drive instance.
     GoogleDrive drive{"./client_secret.json"};
@@ -36,18 +37,36 @@ int main(int argc, const char *argv[])
         return -2;
     }
 
-    if (!drive.directory_exists(DIR_JKSV_FOLDER.data()) && !drive.create_directory(DIR_JKSV_FOLDER.data()))
-    {
-        std::cout << "Error creating JKSV folder!" << std::endl;
-        return -3;
-    }
+    // This is the pointer used to switch between client/remote.
+    Storage *target = nullptr;
 
-    // Grab the ID of the JKSV folder.
-    std::string jksvId;
-    if (!drive.get_directory_id(DIR_JKSV_FOLDER.data(), jksvId))
+    while (CommandReader::read_line())
     {
-        std::cout << "Error getting ID of JKSV folder!" << std::endl;
-        return -4;
+        std::string targetString;
+        if (!CommandReader::get_next_parameter(targetString))
+        {
+            break;
+        }
+
+        // Set the target storage system.
+        if (targetString == "local")
+        {
+            target = &local;
+        }
+        else if (targetString == "drive")
+        {
+            target = &drive;
+        }
+        else if (targetString == "exit")
+        {
+            break;
+        }
+        else
+        {
+            std::cout << "Invalid storage system \"" << targetString << "\" specified." << std::endl;
+            // Do not pass go. Do not collect $200.
+            continue;
+        }
     }
 
     curl::exit();

@@ -128,6 +128,8 @@ GoogleDrive::GoogleDrive(std::string_view configFile) : m_curl(curl::new_handle(
         }
         // Write
         driveConfig << json_object_get_string(clientJson.get());
+
+        logger::log("Refresh token written.");
     }
     else // Should always bail in this case.
     {
@@ -525,13 +527,17 @@ bool GoogleDrive::get_set_root_id(void)
         return false;
     }
 
+    logger::log("get_set_root_id");
+
     // Headers
     curl::HeaderList headers = curl::new_header_list();
     curl::append_header(headers, m_authHeader);
+    logger::log("headers");
 
     // URL
     char urlBuffer[SIZE_URL_BUFFER] = {0};
     std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?fields=rootFolderId", URL_DRIVE_ABOUT_API.data());
+    logger::log(urlBuffer);
 
     // Response string.
     std::string response;
@@ -541,11 +547,13 @@ bool GoogleDrive::get_set_root_id(void)
     curl::set_option(m_curl, CURLOPT_URL, urlBuffer);
     curl::set_option(m_curl, CURLOPT_WRITEFUNCTION, curl::write_response_string);
     curl::set_option(m_curl, CURLOPT_WRITEDATA, &response);
+    logger::log("curl");
 
     if (!curl::perform(m_curl))
     {
         return false;
     }
+    logger::log("curl::perform");
 
     // Response parsing.
     json::Object responseParser = json::new_object(json_tokener_parse, response.c_str());
@@ -553,6 +561,7 @@ bool GoogleDrive::get_set_root_id(void)
     {
         return false;
     }
+    logger::log("response");
 
     // Get the root ID.
     json_object *rootId = json::get_object(responseParser, "rootFolderId");
@@ -561,10 +570,13 @@ bool GoogleDrive::get_set_root_id(void)
         logger::log("Error getting root directory ID from Google Drive!");
         return false;
     }
+    logger::log("rootId");
 
     // Save it and also set the current parent to it.
     m_root = json_object_get_string(rootId);
     m_parent = m_root;
+
+    logger::log("Root obtained: %s", m_root.c_str());
 
     return true;
 }
@@ -634,6 +646,8 @@ bool GoogleDrive::request_listing(void)
     {
         return false;
     }
+
+    logger::log("request_listing");
 
     // Initial URL.
     char urlBuffer[SIZE_URL_BUFFER] = {0};

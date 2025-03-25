@@ -57,7 +57,9 @@ namespace curl
 
     static inline bool perform(curl::Handle &handle)
     {
+        logger::log("before perform");
         CURLcode error = curl_easy_perform(handle.get());
+        logger::log("after perform");
         if (error != CURLE_OK)
         {
             logger::log("Error performing CURL: %i.", error);

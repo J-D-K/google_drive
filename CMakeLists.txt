@@ -7,8 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(${PROJECT_NAME})
 
+target_include_directories(${PROJECT_NAME} PRIVATE include)
+
 target_sources(${PROJECT_NAME} PRIVATE
                source/curl.cpp
+               source/CommandReader.cpp
                source/GoogleDrive.cpp
                source/Item.cpp
                source/Local.cpp
@@ -17,7 +20,6 @@ target_sources(${PROJECT_NAME} PRIVATE
                source/Storage.cpp
                source/stringutil.cpp)
 
-target_include_directories(${PROJECT_NAME} PRIVATE include)
 
 target_compile_options(${PROJECT_NAME} PRIVATE -O2)
 
