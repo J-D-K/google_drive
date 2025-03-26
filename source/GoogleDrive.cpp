@@ -147,7 +147,22 @@ GoogleDrive::GoogleDrive(std::string_view configFile) : m_curl(curl::new_handle(
 
 void GoogleDrive::change_directory(std::string_view name)
 {
-    m_parent = name;
+    // This is the iterator.
+    Storage::ItemIterator targetDir;
+    if (name == ".." && (targetDir = GoogleDrive::find_directory_by_id(m_parent)) != m_list.end())
+    {
+        // Set the parent to the parent of our current parent.
+        m_parent = targetDir->get_parent_id();
+    }
+    else if ((targetDir = Storage::find_directory(name)) != m_list.end())
+    {
+        m_parent = targetDir->get_id();
+    }
+    else
+    {
+        std::cout << "Drive error changing directory: Unable to locate target directory." << std::endl;
+        return;
+    }
 }
 
 bool GoogleDrive::create_directory(std::string_view name)
@@ -664,8 +679,6 @@ bool GoogleDrive::request_listing(void)
         return false;
     }
 
-    logger::log("request_listing");
-
     // Initial URL.
     char urlBuffer[SIZE_URL_BUFFER] = {0};
     std::snprintf(urlBuffer, SIZE_URL_BUFFER, "%s?%s", URL_DRIVE_FILE_API.data(), PARAM_DEFAULT_LIST_QUERY.data());
@@ -772,6 +785,13 @@ bool GoogleDrive::process_listing(json::Object &json)
     }
 
     return true;
+}
+
+Storage::ItemIterator GoogleDrive::find_directory_by_id(std::string_view id)
+{
+    return std::find_if(m_list.begin(), m_list.end(), [id](const Item &item) {
+        return item.is_directory() && item.get_id() == id;
+    });
 }
 
 bool GoogleDrive::error_occurred(json::Object &json)

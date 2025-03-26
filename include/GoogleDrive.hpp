@@ -95,6 +95,11 @@ class GoogleDrive final : public Remote
         /// @return True on success. False on failure.
         bool process_listing(json::Object &json);
 
+        /// @brief Locates the directory using the ID passed.
+        /// @param id ID to search for.
+        /// @return True on success. False on failure.
+        Storage::ItemIterator find_directory_by_id(std::string_view id);
+
         /// @brief Performs a quick check on the json::Object passed to see if the error key is present.
         /// @param json json::Object to check.
         /// @return True if the key is found. False if it isn't.
