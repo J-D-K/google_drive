@@ -1,6 +1,7 @@
 #include "Local.hpp"
 #include <algorithm>
 #include <filesystem>
+#include <iostream>
 
 Local::Local(std::string_view root) : Storage(root)
 {
@@ -18,7 +19,7 @@ void Local::change_directory(std::string_view name)
 
         // Set the parent to a substring of itself ending with the last slash in the path. Note: This needs a check
         // in the future.
-        m_parent = m_parent.substr(0, parent - 1);
+        m_parent = m_parent.substr(0, parent);
     }
     else
     {
@@ -59,6 +60,17 @@ bool Local::delete_file(std::string_view name)
     return std::filesystem::remove(fullPath);
 }
 
+void Local::list_contents(void) const
+{
+    for (const Item &item : m_list)
+    {
+        std::cout << item.get_name() << ":" << std::endl;
+        std::cout << "\tID: " << item.get_id() << std::endl;
+        std::cout << "\tParent: " << item.get_parent_id() << std::endl;
+        std::cout << "\tDirectory: " << (item.is_directory() ? "true" : "false") << std::endl;
+    }
+}
+
 void Local::load_parent_listing(void)
 {
     // Clear the list vector.
@@ -68,7 +80,8 @@ void Local::load_parent_listing(void)
     for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(m_parent))
     {
         // This is used twice for this storage type and I think it looks stupid.
-        std::string_view name = entry.path().filename().string();
+        std::string name = entry.path().filename().string();
+
         // Push back the name of the file.
         m_list.emplace_back(name, name, entry.path().parent_path().string(), entry.is_directory());
     }

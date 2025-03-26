@@ -27,6 +27,9 @@ class Local final : public Storage
         /// @return True on success. False on failure.
         bool delete_file(std::string_view name) override;
 
+        /// @brief Lists the contents of the current parent folder.
+        void list_contents(void) const override;
+
     private:
         /// @brief Loads and stores the listing of the current parent/working directory.
         void load_parent_listing(void);

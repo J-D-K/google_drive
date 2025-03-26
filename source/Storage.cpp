@@ -1,5 +1,6 @@
 #include "Storage.hpp"
 #include <algorithm>
+#include <iostream>
 
 Storage::Storage(std::string_view root) : m_root(root), m_parent(root) {};
 
@@ -65,6 +66,17 @@ bool Storage::get_file_id(int index, std::string &out)
     }
     out = m_list.at(index).get_id();
     return true;
+}
+
+void Storage::list_contents(void) const
+{
+    for (const Item &item : m_list)
+    {
+        std::cout << item.get_name() << ":" << std::endl;
+        std::cout << "\tID: " << item.get_id() << std::endl;
+        std::cout << "\tParent: " << item.get_parent_id() << std::endl;
+        std::cout << "\tDirectory: " << item.is_directory() << std::endl;
+    }
 }
 
 Storage::ItemIterator Storage::find_directory(std::string_view name)

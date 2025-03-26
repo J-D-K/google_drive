@@ -60,6 +60,7 @@ class Storage
         /// @return True on success. False if index is out of bounds.
         bool get_file_id(int index, std::string &out);
 
+
         /// @brief Changes the current parent directory.
         /// @param name Name/ID of the folder to change to.
         virtual void change_directory(std::string_view name) = 0;
@@ -78,6 +79,9 @@ class Storage
         /// @param name Name/ID of the file to delete.
         /// @return True on success. False on failure.
         virtual bool delete_file(std::string_view name) = 0;
+
+        /// @brief Prints the contents of m_list.
+        virtual void list_contents(void) const = 0;
 
     protected:
         /// @brief Stores whether or not init'ing the Storage was successful.

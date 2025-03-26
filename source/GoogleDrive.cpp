@@ -258,6 +258,23 @@ bool GoogleDrive::delete_file(std::string_view name)
     return true;
 }
 
+void GoogleDrive::list_contents(void) const
+{
+    for (const Item &item : m_list)
+    {
+        if (item.get_parent_id() != m_parent)
+        {
+            continue;
+        }
+
+        // Print information.
+        std::cout << item.get_name() << ":" << std::endl;
+        std::cout << "\tID: " << item.get_id() << std::endl;
+        std::cout << "\tParent: " << item.get_parent_id() << std::endl;
+        std::cout << "\tDirectory: " << (item.is_directory() ? "true" : "false") << std::endl;
+    }
+}
+
 bool GoogleDrive::upload_file(const std::filesystem::path &path)
 {
     // Make sure the file can even be read before trying to continue.

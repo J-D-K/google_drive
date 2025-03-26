@@ -34,6 +34,9 @@ class GoogleDrive final : public Remote
         /// @return True on success. False on failure.
         bool delete_file(std::string_view name) override;
 
+        /// @brief Lists the contents of the current parent directory.
+        void list_contents(void) const override;
+
         /// @brief Uploads a file to Google Drive under the currently set parent.
         /// @param path Path of the file to upload.
         /// @return True on success. False on failure.
