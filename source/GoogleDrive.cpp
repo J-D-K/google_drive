@@ -315,7 +315,7 @@ bool GoogleDrive::upload_file(const std::filesystem::path &path)
 
     // Post JSON.
     json::Object postJson = json::new_object(json_object_new_object);
-    json_object *driveName = json_object_new_string(path.filename().c_str());
+    json_object *driveName = json_object_new_string(reinterpret_cast<const char *>(path.filename().u8string().c_str()));
     json::add_object(postJson, JSON_KEY_NAME.data(), driveName);
     if (!m_parent.empty())
     {
@@ -558,8 +558,6 @@ bool GoogleDrive::get_set_root_id(void)
     {
         return false;
     }
-
-    logger::log("get_set_root_id");
 
     // Headers
     curl::HeaderList headers = curl::new_header_list();

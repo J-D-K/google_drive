@@ -14,17 +14,20 @@ namespace
     {
         ID_LIST,
         ID_CHDIR,
-        ID_MKDIR
+        ID_MKDIR,
+        ID_DELETE
     };
 
     // Map of commands.
     std::map<std::string_view, int> COMMAND_MAP = {{"list", COMMAND_IDS::ID_LIST},
                                                    {"chdir", COMMAND_IDS::ID_CHDIR},
-                                                   {"mkdir", COMMAND_IDS::ID_MKDIR}};
+                                                   {"mkdir", COMMAND_IDS::ID_MKDIR},
+                                                   {"delete", COMMAND_IDS::ID_DELETE}};
 
     // Error strings for commands.
     constexpr std::string_view ERROR_CHDIR = "Error executing command chdir: ";
     constexpr std::string_view ERROR_MKDIR = "Error executing command mkdir: ";
+    constexpr std::string_view ERROR_DELETE = "Error executing command delete: ";
 } // namespace
 
 /// @brief Function for executing the command chdir.
@@ -36,6 +39,11 @@ static bool chdir(Storage &storage);
 /// @param storage Target storage system.
 /// @return True on success. False on failure.
 static bool mkdir(Storage &storage);
+
+/// @brief Deletes the target item.
+/// @param storage Target storage system.
+/// @return True on success. False on failure.
+static bool deleteItem(Storage &storage);
 
 bool execute_command(Storage &storage)
 {
@@ -64,6 +72,12 @@ bool execute_command(Storage &storage)
         case ID_MKDIR:
         {
             return mkdir(storage);
+        }
+        break;
+
+        case ID_DELETE:
+        {
+            return deleteItem(storage);
         }
         break;
     }
@@ -98,4 +112,33 @@ static bool mkdir(Storage &storage)
         return false;
     }
     return true;
+}
+
+static bool deleteItem(Storage &storage)
+{
+    std::string type, target;
+    if (!CommandReader::get_next_parameter(type) || !CommandReader::get_next_parameter(target))
+    {
+        std::cout << ERROR_DELETE << "Missing parameter" << std::endl;
+        return false;
+    }
+
+    // Tell what type of item to delete.
+    bool directory = false;
+    if (type == "dir" || type == "folder" || type == "directory")
+    {
+        directory = true;
+    }
+
+    bool success = false;
+    if (directory)
+    {
+        success = storage.delete_directory(target);
+    }
+    else
+    {
+        success = storage.delete_file(target);
+    }
+
+    return success;
 }
